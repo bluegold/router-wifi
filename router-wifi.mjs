@@ -7,7 +7,7 @@ import process from "node:process";
 
 const DEFAULT_BASE_URL = "http://192.168.244.254";
 const SNAPSHOT_DIR = path.resolve(".router-snapshots");
-const BAND_CONFIG = {
+export const BAND_CONFIG = {
   "5g": {
     endpoint: "/api/stat/5g_enable",
     field: "5g_enabled",
@@ -19,10 +19,11 @@ const BAND_CONFIG = {
     ssidField: "24g_ssid",
   },
 };
-const DEFAULT_BAND = "5g";
+export const DEFAULT_BAND = "5g";
+const BOOLEAN_FLAGS = new Set(["help", "verbose"]);
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2));
+export async function main(argv = process.argv.slice(2)) {
+  const args = parseArgs(argv);
   const [command] = args.positionals;
 
   if (!command || args.flags.help) {
@@ -208,7 +209,7 @@ async function runSet(client, flags) {
   );
 }
 
-class RouterClient {
+export class RouterClient {
   constructor({ baseUrl, verbose }) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
     this.verbose = verbose;
@@ -326,7 +327,7 @@ class RouterClient {
   }
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const flags = {};
   const positionals = [];
 
@@ -339,6 +340,10 @@ function parseArgs(argv) {
 
     const [rawKey, inlineValue] = token.slice(2).split("=", 2);
     const key = rawKey.replace(/-([a-z])/g, (_, char) => char.toUpperCase());
+    if (BOOLEAN_FLAGS.has(key) && inlineValue === undefined) {
+      flags[key] = true;
+      continue;
+    }
     const next = inlineValue ?? argv[index + 1];
     if (inlineValue !== undefined) {
       flags[key] = inlineValue;
@@ -355,7 +360,7 @@ function parseArgs(argv) {
   return { flags, positionals };
 }
 
-function printHelp() {
+export function printHelp() {
   console.log(`usage:
   router-wifi discover --username USER --password PASS [--router URL]
   router-wifi fetch --username USER --password PASS --path PATH
@@ -369,7 +374,7 @@ examples:
   router-wifi set --username admin --password secret --band 24g --enabled on`);
 }
 
-async function requireCredentials(flags) {
+export async function requireCredentials(flags) {
   if (!flags.username) {
     flags.username = process.env.ROUTER_USERNAME ?? "";
   }
@@ -380,7 +385,7 @@ async function requireCredentials(flags) {
   requireFlag(flags.password, "--password or ROUTER_PASSWORD env");
 }
 
-async function readPasswordFromEnvOrFile() {
+export async function readPasswordFromEnvOrFile() {
   if (process.env.ROUTER_PASSWORD) {
     return process.env.ROUTER_PASSWORD;
   }
@@ -393,13 +398,13 @@ async function readPasswordFromEnvOrFile() {
   return (await readFile(filePath, "utf8")).trim();
 }
 
-function requireFlag(value, name) {
+export function requireFlag(value, name) {
   if (value === undefined || value === "") {
     fail(`${name} が必要です`);
   }
 }
 
-function encryptWithRouterKey(plainText, base64Body) {
+export function encryptWithRouterKey(plainText, base64Body) {
   const pem = `-----BEGIN PUBLIC KEY-----\n${base64Body}\n-----END PUBLIC KEY-----`;
   return publicEncrypt(
     {
@@ -410,12 +415,12 @@ function encryptWithRouterKey(plainText, base64Body) {
   ).toString("base64");
 }
 
-function extractCsrfToken(html) {
+export function extractCsrfToken(html) {
   const match = html.match(/var\s+csrf_token\s*=\s*['"]([^'"]*)['"]/);
   return match?.[1] ?? "";
 }
 
-function withCsrf(targetPath, csrfToken) {
+export function withCsrf(targetPath, csrfToken) {
   if (!csrfToken) {
     return targetPath;
   }
@@ -425,24 +430,24 @@ function withCsrf(targetPath, csrfToken) {
   return `${targetPath}&csrf_token=${encodeURIComponent(csrfToken)}`;
 }
 
-function serializeCookies(cookies) {
+export function serializeCookies(cookies) {
   return [...cookies.entries()]
     .map(([name, value]) => `${name}=${value}`)
     .join("; ");
 }
 
-function splitSetCookie(header) {
+export function splitSetCookie(header) {
   if (!header) {
     return [];
   }
   return header.split(/,(?=[^;]+=[^;]+)/g);
 }
 
-function unique(values) {
+export function unique(values) {
   return [...new Set(values)];
 }
 
-function normalizeBoolean(value) {
+export function normalizeBoolean(value) {
   if (typeof value === "boolean") {
     return value;
   }
@@ -455,7 +460,7 @@ function normalizeBoolean(value) {
   return null;
 }
 
-function convertLikeCurrent(input, current) {
+export function convertLikeCurrent(input, current) {
   const enabled = /^(1|true|on|enable|enabled)$/i.test(input);
 
   if (typeof current === "boolean") {
@@ -479,7 +484,7 @@ function convertLikeCurrent(input, current) {
   fail(`現在値 ${JSON.stringify(current)} から有効/無効の型を推定できません`);
 }
 
-function resolveBandConfig(flags, band) {
+export function resolveBandConfig(flags, band) {
   if (!BAND_CONFIG[band]) {
     fail(`未対応の band です: ${band}`);
   }
@@ -492,12 +497,14 @@ function resolveBandConfig(flags, band) {
   };
 }
 
-function fail(message) {
+export function fail(message) {
   console.error(message);
   process.exit(1);
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.stack : String(error));
-  process.exit(1);
-});
+if (import.meta.url === new URL(process.argv[1], "file:").href) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.stack : String(error));
+    process.exit(1);
+  });
+}
