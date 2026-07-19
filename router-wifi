@@ -1,0 +1,9 @@
+#!/bin/sh
+
+set -eu
+
+export ROUTER_USERNAME="${ROUTER_USERNAME:-admin}"
+export ROUTER_PASSWORD_FILE="${ROUTER_PASSWORD_FILE:-$HOME/.config/router-wifi/password}"
+
+cd "$HOME/tmp/wifi"
+exec node ./router-wifi.mjs "$@"
