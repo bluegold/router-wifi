@@ -31,6 +31,32 @@ chmod +x ./router-wifi.mjs
 ./router-wifi.mjs set --username admin --password '...' --band 24g --enabled on
 ```
 
+止め忘れ防止のために、指定時間帯に対して「今あるべき状態」を判定し、ずれていたら戻す `guard` もあります。
+
+```bash
+./router-wifi.mjs guard --on 07:00 --off 23:00
+
+./router-wifi.mjs guard --band 24g --on 08:00 --off 22:00
+```
+
+`guard` は現在時刻が `--on` から `--off` の間なら ON、それ以外なら OFF とみなし、実際の状態がずれているときだけ変更します。
+
+`guard` の結果は既定で `./router-wifi.log` に 1 行 1 JSON の形式で追記されます。`--log-file` で変更できます。
+
+cron に登録するための `schedule` もあります。これは指定時刻ぴったりに 1 回切り替えるのではなく、一定間隔で `guard` を実行して状態を補正します。
+
+```bash
+./router-wifi.mjs schedule --on 07:00 --off 23:00
+
+./router-wifi.mjs schedule --action install --on 07:00 --off 23:00
+
+./router-wifi.mjs schedule --action install --on 07:00 --off 23:00 --interval 10
+
+./router-wifi.mjs schedule --action remove
+```
+
+`install` は crontab に `router-wifi schedule` 管理ブロックを追加または更新し、`remove` はそのブロックだけを削除します。既定の監視間隔は 15 分です。
+
 バンドごとの既定値は次です。
 
 - 5g

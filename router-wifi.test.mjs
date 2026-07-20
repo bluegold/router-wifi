@@ -1,20 +1,29 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 import {
   BAND_CONFIG,
+  buildCronIntervalSpec,
+  buildCronBlock,
   convertLikeCurrent,
   extractCsrfToken,
+  formatLocalTimestamp,
+  isWithinEnabledWindow,
   normalizeBoolean,
+  outputResult,
   parseArgs,
+  parseIntervalMinutes,
+  parseTimeSpec,
   readPasswordFromEnvOrFile,
+  removeManagedBlock,
   resolveBandConfig,
   serializeCookies,
   splitSetCookie,
   unique,
+  upsertManagedBlock,
   withCsrf,
 } from "./router-wifi.mjs";
 
@@ -88,6 +97,129 @@ test("resolveBandConfig allows explicit overrides", () => {
     field: "enabled",
     ssidField: "ssid",
   });
+});
+
+test("parseTimeSpec parses HH:MM", () => {
+  assert.deepEqual(parseTimeSpec("07:05"), { hour: "7", minute: "5" });
+  assert.deepEqual(parseTimeSpec("23:45"), { hour: "23", minute: "45" });
+});
+
+test("buildCronBlock creates on/off entries for default band", () => {
+  const block = buildCronBlock({
+    on: "07:00",
+    off: "23:30",
+    wrapper: "/tmp/router-wifi",
+  });
+
+  assert.match(block, /BEGIN router-wifi schedule/);
+  assert.match(
+    block,
+    /\*\/15 \* \* \* \* \/tmp\/router-wifi guard --band 5g --on 07:00 --off 23:30 --log-file .*router-wifi\.log/,
+  );
+  assert.match(block, /END router-wifi schedule/);
+});
+
+test("buildCronBlock includes router override and band", () => {
+  const block = buildCronBlock({
+    band: "24g",
+    on: "08:15",
+    off: "22:45",
+    wrapper: "/tmp/router-wifi",
+    router: "http://192.0.2.1",
+    interval: "10",
+    logFile: "/tmp/router-wifi.log",
+  });
+
+  assert.match(
+    block,
+    /\*\/10 \* \* \* \* \/tmp\/router-wifi guard --band 24g --on 08:15 --off 22:45 --router http:\/\/192\.0\.2\.1 --log-file \/tmp\/router-wifi\.log/,
+  );
+});
+
+test("upsertManagedBlock appends managed cron block", () => {
+  const block = "# BEGIN router-wifi schedule\n0 7 * * * cmd\n# END router-wifi schedule";
+  const current = "MAILTO=user@example.com\n0 0 * * * /bin/true\n";
+  const updated = upsertManagedBlock(current, block);
+
+  assert.equal(
+    updated,
+    "MAILTO=user@example.com\n0 0 * * * /bin/true\n\n# BEGIN router-wifi schedule\n0 7 * * * cmd\n# END router-wifi schedule\n",
+  );
+});
+
+test("removeManagedBlock removes only managed section", () => {
+  const current = [
+    "MAILTO=user@example.com",
+    "# BEGIN router-wifi schedule",
+    "0 7 * * * cmd",
+    "# END router-wifi schedule",
+    "0 0 * * * /bin/true",
+    "",
+  ].join("\n");
+
+  assert.equal(removeManagedBlock(current), "MAILTO=user@example.com\n0 0 * * * /bin/true");
+});
+
+test("isWithinEnabledWindow handles daytime window", () => {
+  assert.equal(isWithinEnabledWindow({ on: "07:00", off: "23:00", now: "06:59" }), false);
+  assert.equal(isWithinEnabledWindow({ on: "07:00", off: "23:00", now: "07:00" }), true);
+  assert.equal(isWithinEnabledWindow({ on: "07:00", off: "23:00", now: "22:59" }), true);
+  assert.equal(isWithinEnabledWindow({ on: "07:00", off: "23:00", now: "23:00" }), false);
+});
+
+test("isWithinEnabledWindow handles overnight window", () => {
+  assert.equal(isWithinEnabledWindow({ on: "23:00", off: "07:00", now: "22:59" }), false);
+  assert.equal(isWithinEnabledWindow({ on: "23:00", off: "07:00", now: "23:00" }), true);
+  assert.equal(isWithinEnabledWindow({ on: "23:00", off: "07:00", now: "02:00" }), true);
+  assert.equal(isWithinEnabledWindow({ on: "23:00", off: "07:00", now: "07:00" }), false);
+});
+
+test("parseIntervalMinutes validates interval", () => {
+  assert.equal(parseIntervalMinutes("15"), 15);
+  assert.equal(parseIntervalMinutes("60"), 60);
+});
+
+test("buildCronIntervalSpec formats cron minute field", () => {
+  assert.equal(buildCronIntervalSpec(15), "*/15 * * * *");
+  assert.equal(buildCronIntervalSpec(60), "0 * * * *");
+});
+
+test("outputResult appends JSON line to log file", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "router-wifi-log-test-"));
+  const logFile = path.join(tempDir, "router.log");
+  const originalConsoleLog = console.log;
+  console.log = () => {};
+
+  try {
+    await outputResult(
+      { logFile },
+      {
+        band: "5g",
+        changed: false,
+        desired: "off",
+        current: "off",
+      },
+    );
+  } finally {
+    console.log = originalConsoleLog;
+  }
+
+  const content = await readFile(logFile, "utf8");
+  const lines = content.trim().split("\n");
+  assert.equal(lines.length, 1);
+
+  const parsed = JSON.parse(lines[0]);
+  assert.equal(parsed.band, "5g");
+  assert.equal(parsed.changed, false);
+  assert.equal(parsed.desired, "off");
+  assert.equal(parsed.current, "off");
+  assert.match(parsed.timestamp, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/);
+});
+
+test("formatLocalTimestamp formats local time with offset", () => {
+  const date = new Date("2026-07-20T03:04:05+09:00");
+  const formatted = formatLocalTimestamp(date);
+  assert.match(formatted, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/);
 });
 
 test("serializeCookies formats Cookie header", () => {
