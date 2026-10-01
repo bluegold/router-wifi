@@ -43,6 +43,17 @@ chmod +x ./router-wifi.mjs
 
 `guard` の結果は既定で `./router-wifi.log` に 1 行 1 JSON の形式で追記されます。`--log-file` で変更できます。
 
+一時的に `guard` のチェックを止める操作もできます。`pause` は指定時刻まで停止し、その時刻が今日すでに過ぎている場合は翌日の同時刻まで停止します。`skip [N]` は次の `guard` 実行から N 回スキップし、スキップするたびに残り回数を減らします。N を省略すると1回です。`resume` は停止と未消費のスキップを解除します。これらの操作はルーターへの接続なしで使えます。
+
+```bash
+./router-wifi.mjs pause --until 19:00
+./router-wifi.mjs skip
+./router-wifi.mjs skip 3
+./router-wifi.mjs resume
+```
+
+制御状態は既定で `./.router-wifi-control.json` に保存されます。cron と手動実行で同じ状態を見るため、CLI は同じ作業ディレクトリから実行してください。`--state-file` で保存先を指定できます。
+
 cron に登録するための `schedule` もあります。これは指定時刻ぴったりに 1 回切り替えるのではなく、一定間隔で `guard` を実行して状態を補正します。
 
 ```bash

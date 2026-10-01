@@ -3,7 +3,7 @@
 import { publicEncrypt, constants } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
@@ -11,6 +11,7 @@ const DEFAULT_BASE_URL = "http://192.168.244.254";
 const SNAPSHOT_DIR = path.resolve(".router-snapshots");
 const DEFAULT_WRAPPER_PATH = path.resolve("router-wifi");
 const DEFAULT_LOG_FILE = path.resolve("router-wifi.log");
+const DEFAULT_CONTROL_FILE = path.resolve(".router-wifi-control.json");
 export const BAND_CONFIG = {
   "5g": {
     endpoint: "/api/stat/5g_enable",
@@ -79,6 +80,13 @@ export async function main(argv = process.argv.slice(2)) {
       await runSet(client, args.flags);
       break;
     case "guard":
+      {
+        const control = await consumeGuardControl(args.flags);
+        if (control) {
+          await outputResult(args.flags, { skipped: true, ...control });
+          break;
+        }
+      }
       await requireCredentials(args.flags);
       requireFlag(args.flags.on, "--on");
       requireFlag(args.flags.off, "--off");
@@ -87,6 +95,19 @@ export async function main(argv = process.argv.slice(2)) {
         password: args.flags.password,
       });
       await runGuard(client, args.flags);
+      break;
+    case "pause":
+      requireFlag(args.flags.until, "--until");
+      await setGuardPause(args.flags);
+      break;
+    case "skip":
+      args.flags.count = args.positionals[1] === undefined
+        ? 1
+        : requirePositiveInteger(args.positionals[1], "skip 回数");
+      await setGuardSkip(args.flags);
+      break;
+    case "resume":
+      await clearGuardPause(args.flags);
       break;
     case "schedule":
       await runSchedule(args.flags);
@@ -273,6 +294,74 @@ export async function runGuard(client, flags) {
     payload: nextPayload,
     response: updated,
   });
+}
+
+export async function setGuardPause(flags) {
+  const until = nextLocalOccurrence(flags.until, flags.now ?? new Date());
+  const state = await readControlState(flags);
+  state.pausedUntil = until.toISOString();
+  await writeControlState(flags, state);
+  console.log(`guard を ${formatLocalTimestamp(until)} まで停止します`);
+}
+
+export async function setGuardSkip(flags) {
+  const state = await readControlState(flags);
+  state.skipRemaining = Number(flags.count);
+  await writeControlState(flags, state);
+  console.log(`次回から guard を ${state.skipRemaining} 回スキップします`);
+}
+
+export async function clearGuardPause(flags) {
+  const state = await readControlState(flags);
+  delete state.pausedUntil;
+  delete state.skipRemaining;
+  await writeControlState(flags, state);
+  console.log("guard の停止とスキップを解除しました");
+}
+
+async function consumeGuardControl(flags) {
+  const state = await readControlState(flags);
+  if (state.skipRemaining > 0) {
+    state.skipRemaining -= 1;
+    await writeControlState(flags, state);
+    return { reason: "skip", remaining: state.skipRemaining };
+  }
+  if (!state.pausedUntil) return null;
+  const until = new Date(state.pausedUntil);
+  if (Number.isNaN(until.getTime()) || until <= new Date()) {
+    delete state.pausedUntil;
+    await writeControlState(flags, state);
+    return null;
+  }
+  return { reason: "paused", until: state.pausedUntil };
+}
+
+async function readControlState(flags) {
+  const file = flags.stateFile ?? DEFAULT_CONTROL_FILE;
+  try {
+    return JSON.parse(await readFile(file, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") return {};
+    throw error;
+  }
+}
+
+async function writeControlState(flags, state) {
+  const file = flags.stateFile ?? DEFAULT_CONTROL_FILE;
+  if (Object.keys(state).length === 0) {
+    await rm(file, { force: true });
+    return;
+  }
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+}
+
+function nextLocalOccurrence(value, now) {
+  const { hour, minute } = parseTimeSpec(value);
+  const until = new Date(now);
+  until.setHours(Number(hour), Number(minute), 0, 0);
+  if (until <= now) until.setDate(until.getDate() + 1);
+  return until;
 }
 
 export async function runSchedule(flags) {
@@ -466,6 +555,9 @@ export function printHelp() {
   router-wifi status --username USER --password PASS
   router-wifi set --username USER --password PASS --enabled on|off [--band 5g|24g]
   router-wifi guard --username USER --password PASS [--band 5g|24g] --on HH:MM --off HH:MM [--log-file PATH]
+  router-wifi pause --until HH:MM [--state-file PATH]
+  router-wifi skip [N] [--state-file PATH]
+  router-wifi resume [--state-file PATH]
   router-wifi schedule --action show|install|remove [--band 5g|24g] [--on HH:MM] [--off HH:MM] [--interval MINUTES] [--log-file PATH]
 
 examples:
@@ -474,6 +566,9 @@ examples:
   router-wifi set --username admin --password secret --enabled off
   router-wifi set --username admin --password secret --band 24g --enabled on
   router-wifi guard --username admin --password secret --on 07:00 --off 23:00
+  router-wifi pause --until 19:00
+  router-wifi skip 3
+  router-wifi resume
   router-wifi schedule --on 07:00 --off 23:00
   router-wifi schedule --action install --band 24g --on 08:00 --off 22:00 --log-file /var/log/router-wifi.log`);
 }
@@ -506,6 +601,14 @@ export function requireFlag(value, name) {
   if (value === undefined || value === "") {
     fail(`${name} が必要です`);
   }
+}
+
+function requirePositiveInteger(value, name) {
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < 1) {
+    fail(`${name} は 1 以上の整数で指定してください`);
+  }
+  return number;
 }
 
 export function encryptWithRouterKey(plainText, base64Body) {
